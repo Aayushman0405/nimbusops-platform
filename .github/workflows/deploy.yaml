@@ -48,7 +48,7 @@ jobs:
           cd control-plane/scaler
           echo "🧪 Testing controller logic..."
 
-          python -c '
+          python - << 'EOF'
           import sys
           sys.path.append(".")
 
@@ -60,13 +60,15 @@ jobs:
           print(f"Decision test: 3 replicas @ 0.5 CPU → {r}")
 
           enhanced = decide_replicas_enhanced(3, 0.5)
-          print(f"Enhanced replicas: {enhanced[\"replicas\"]}")
-          print(
-              f"Cost diff: ${enhanced[\"cost_impact\"][\"cost_difference_usd_per_hour\"]}/hr"
-          )
-          '
 
-          python -c '
+          replicas = enhanced["replicas"]
+          cost_diff = enhanced["cost_impact"]["cost_difference_usd_per_hour"]
+
+          print(f"Enhanced replicas: {replicas}")
+          print(f"Cost diff: ${cost_diff}/hr")
+          EOF
+
+          python - << 'EOF'
           import sys
           sys.path.append(".")
 
@@ -75,7 +77,7 @@ jobs:
               print("✅ prometheus_query.py imports successfully")
           except Exception:
               print("⚠️ Prometheus not available in CI (expected)")
-          '
+          EOF
 
           echo "📦 Files present:"
           ls -la *.py
