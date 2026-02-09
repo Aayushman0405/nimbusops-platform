@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+
+    rule_files:
+      - /etc/prometheus/alerts/*.yaml
+
+    scrape_configs:
+
+    # -------------------------------
+    # Node Exporter
+    # -------------------------------
+    - job_name: "node-exporter"
+      kubernetes_sd_configs:
+        - role: pod
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_namespace]
+          action: keep
+          regex: monitoring
+        - source_labels: [__meta_kubernetes_pod_label_app]
+          action: keep
+          regex: node-exporter
+        - source_labels: [__meta_kubernetes_pod_container_port_number]
+          action: keep
+          regex: "9100"
+
+    # -------------------------------
+    # kube-state-metrics
+    # -------------------------------
+    - job_name: "kube-state-metrics"
+      static_configs:
+        - targets:
+            - kube-state-metrics.monitoring.svc.cluster.local:8080
+
+    # -------------------------------
+    # kubelet cAdvisor (FINAL, CORRECT)
+    # -------------------------------
+    - job_name: "kubelet-cadvisor"
+      scheme: https
+      tls_config:
+        insecure_skip_verify: true
+
+      kubernetes_sd_configs:
+        - role: node
+
+      relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+
+        - source_labels: [__meta_kubernetes_node_name]
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+    # -------------------------------
+    # ml-inference app metrics
+    # -------------------------------
+    - job_name: "ml-inference"
+      metrics_path: /metrics
+      kubernetes_sd_configs:
+        - role: pod
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_namespace]
+          action: keep
+          regex: ml-inference
+        - source_labels: [__meta_kubernetes_pod_container_port_number]
+          action: keep
+          regex: "8000"
+
+    # -------------------------------
+    # ai-debugger
+    # -------------------------------
+    - job_name: "ai-debugger"
+      metrics_path: /metrics
+      kubernetes_sd_configs:
+        - role: pod
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_namespace]
+          action: keep
+          regex: ai-debugger
+        - source_labels: [__meta_kubernetes_pod_container_port_number]
+          action: keep
+          regex: "8000"
+

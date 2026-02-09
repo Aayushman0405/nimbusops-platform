@@ -1,0 +1,66 @@
+name: Rollback NimbusOps
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: 'Revision to rollback to (leave empty for previous)'
+        required: false
+        type: string
+      namespace:
+        description: 'Kubernetes namespace'
+        required: true
+        default: 'aurora-system'
+        type: string
+
+env:
+  DEPLOYMENT_NAME: nimbusops-controller
+
+jobs:
+  rollback:
+    runs-on: self-hosted
+    
+    steps:
+      - name: Check kubectl access
+        run: |
+          kubectl version --client
+          kubectl get nodes
+          
+      - name: Show deployment history
+        run: |
+          echo "📜 Deployment history for $DEPLOYMENT_NAME in ${{ github.event.inputs.namespace }}:"
+          kubectl rollout history deployment/$DEPLOYMENT_NAME -n ${{ github.event.inputs.namespace }}
+          
+      - name: Show current image
+        run: |
+          echo "🖼️ Current image:"
+          kubectl get deployment/$DEPLOYMENT_NAME -n ${{ github.event.inputs.namespace }} -o jsonpath='{.spec.template.spec.containers[0].image}'
+          echo ""
+          
+      - name: Perform rollback
+        run: |
+          if [ -z "${{ github.event.inputs.revision }}" ]; then
+            echo "🔄 Rolling back to previous revision..."
+            kubectl rollout undo deployment/$DEPLOYMENT_NAME -n ${{ github.event.inputs.namespace }}
+          else
+            echo "🔄 Rolling back to revision ${{ github.event.inputs.revision }}..."
+            kubectl rollout undo deployment/$DEPLOYMENT_NAME -n ${{ github.event.inputs.namespace }} --to-revision=${{ github.event.inputs.revision }}
+          fi
+          
+      - name: Wait for rollback completion
+        run: |
+          echo "⏳ Waiting for rollback to complete..."
+          kubectl rollout status deployment/$DEPLOYMENT_NAME -n ${{ github.event.inputs.namespace }} --timeout=300s
+          
+      - name: Verify rollback
+        run: |
+          echo "✅ Rollback verification..."
+          echo "New image:"
+          kubectl get deployment/$DEPLOYMENT_NAME -n ${{ github.event.inputs.namespace }} -o jsonpath='{.spec.template.spec.containers[0].image}'
+          echo ""
+          kubectl get pods -n ${{ github.event.inputs.namespace }} -l app=$DEPLOYMENT_NAME
+          
+      - name: Show rollback logs
+        run: |
+          echo "📋 Rollback logs:"
+          kubectl logs -n ${{ github.event.inputs.namespace }} deployment/$DEPLOYMENT_NAME --tail=10

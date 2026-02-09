@@ -1,0 +1,25 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nimbusops-deploy-scaler
+  namespace: aurora-system
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments", "deployments/scale"]
+  verbs: ["get", "patch", "update"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nimbusops-deploy-scaler-binding
+  namespace: aurora-system
+subjects:
+- kind: ServiceAccount
+  name: aurora-sa
+  namespace: aurora-system
+roleRef:
+  kind: Role
+  name: nimbusops-deploy-scaler
+  apiGroup: rbac.authorization.k8s.io
+
