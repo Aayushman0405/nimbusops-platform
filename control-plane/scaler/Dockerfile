@@ -11,10 +11,10 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY controller/ controller/
+# Copy controller source code
+COPY . .
 
 # Expose metrics port
 EXPOSE 8001
 
-CMD ["python", "-u", "controller/main.py"]
-
+CMD ["python", "-u", "main.py"]
