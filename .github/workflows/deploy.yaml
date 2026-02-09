@@ -51,7 +51,8 @@ jobs:
         run: |
           cd control-plane/scaler
           echo "Testing controller code..."
-          
+
+          export TEST_MODE=true
           # First test imports
           python -c "
           import sys
@@ -66,6 +67,8 @@ jobs:
           
           # Then test main imports
           python -c "
+          import os
+          os.enversion['TEST_MODE']='true'
           import sys
           sys.path.append('.')
           try:
@@ -73,6 +76,8 @@ jobs:
               print('✅ Main module imports successfully')
           except Exception as e:
               print(f'❌ Main module import failed: {e}')
+              import traceback
+              traceback.print_exc()
               sys.exit(1)
           "
           
