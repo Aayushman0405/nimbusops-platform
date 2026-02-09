@@ -68,7 +68,7 @@ jobs:
           # Then test main imports
           python -c "
           import os
-          os.enversion['TEST_MODE']='true'
+          os.enverion['TEST_MODE']='true'
           import sys
           sys.path.append('.')
           try:
