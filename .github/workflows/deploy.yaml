@@ -85,8 +85,8 @@ jobs:
 
       - name: Build Docker image
         run: |
-          cd control-plane/scaler
-          docker build -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} .
+          cd control-plane
+          docker build -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} -f scaler/Dockerfile .
           docker tag $REGISTRY/$IMAGE_NAME:${{ github.sha }} $REGISTRY/$IMAGE_NAME:latest
           echo "✅ Docker image built"
 
