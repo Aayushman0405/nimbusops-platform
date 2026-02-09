@@ -40,12 +40,41 @@ jobs:
         with:
           python-version: '3.11'
           
+      - name: Install Python dependencies
+        run: |
+          cd control-plane/scaler
+          echo "Installing dependencies from requirements.txt..."
+          pip install -r requirements.txt
+          echo "✅ Dependencies installed"
+          
       - name: Test controller code
         run: |
           cd control-plane/scaler
           echo "Testing controller code..."
-          python -c "import sys; sys.path.append('.'); from decision import decide_replicas; print('✅ Decision module imports successfully')"
-          python -c "import sys; sys.path.append('.'); from main import NimbusOpsController; print('✅ Main module imports successfully')"
+          
+          # First test imports
+          python -c "
+          import sys
+          sys.path.append('.')
+          try:
+              from decision import decide_replicas
+              print('✅ Decision module imports successfully')
+          except Exception as e:
+              print(f'❌ Decision module import failed: {e}')
+              sys.exit(1)
+          "
+          
+          # Then test main imports
+          python -c "
+          import sys
+          sys.path.append('.')
+          try:
+              from main import NimbusOpsController
+              print('✅ Main module imports successfully')
+          except Exception as e:
+              print(f'❌ Main module import failed: {e}')
+              sys.exit(1)
+          "
           
       - name: Build Docker image
         run: |
