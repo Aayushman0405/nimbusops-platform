@@ -1,9 +1,3 @@
-# Extraordinary Engineering Work 🧠🔥
-
-This project goes far beyond tutorials.
-
----
-
 ## What Makes NimbusOps Exceptional?
 
 ### 🧠 Intelligent Autoscaling
@@ -68,5 +62,4 @@ This project demonstrates:
 - Observability discipline
 - Production debugging skills
 
-> This is **senior-level engineering work**.
 
