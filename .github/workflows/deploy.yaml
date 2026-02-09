@@ -48,37 +48,38 @@ jobs:
           cd control-plane/scaler
           echo "🧪 Testing controller logic..."
 
-          # Decision logic (pure Python)
-          python -c "
+          python -c '
           import sys
-          sys.path.append('.')
+          sys.path.append(".")
 
           from decision import decide_replicas, decide_replicas_enhanced
 
-          print('✅ decision.py imports successfully')
+          print("✅ decision.py imports successfully")
 
           r = decide_replicas(3, 0.5)
-          print(f'Decision test: 3 replicas @ 0.5 CPU → {r}')
+          print(f"Decision test: 3 replicas @ 0.5 CPU → {r}")
 
           enhanced = decide_replicas_enhanced(3, 0.5)
-          print(f'Enhanced replicas: {enhanced['replicas']}')
-          print(f'Cost diff: ${enhanced['cost_impact']['cost_difference_usd_per_hour']}/hr')
-          "
+          print(f"Enhanced replicas: {enhanced[\"replicas\"]}")
+          print(
+              f"Cost diff: ${enhanced[\"cost_impact\"][\"cost_difference_usd_per_hour\"]}/hr"
+          )
+          '
 
-          # Prometheus query module (import only)
-          python -c "
+          python -c '
           import sys
-          sys.path.append('.')
+          sys.path.append(".")
 
           try:
               from prometheus_query import get_avg_cpu
-              print('✅ prometheus_query.py imports successfully')
-          except Exception as e:
-              print('⚠️ Prometheus not available in CI (expected)')
-          "
+              print("✅ prometheus_query.py imports successfully")
+          except Exception:
+              print("⚠️ Prometheus not available in CI (expected)")
+          '
 
           echo "📦 Files present:"
           ls -la *.py
+
 
       - name: Build Docker image
         run: |
