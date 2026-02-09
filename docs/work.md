@@ -50,16 +50,6 @@ Built by:
 - Solving RWX persistence issues
 - Handling crash loops & rollbacks
 
----
 
-## Interview Signal
-
-This project demonstrates:
-- Systems thinking
-- Cloud economics awareness
-- Kubernetes mastery
-- ML lifecycle ownership
-- Observability discipline
-- Production debugging skills
 
 
