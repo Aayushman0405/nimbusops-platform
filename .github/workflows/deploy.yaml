@@ -60,7 +60,6 @@ jobs:
           print(f"Decision test: 3 replicas @ 0.5 CPU → {r}")
 
           enhanced = decide_replicas_enhanced(3, 0.5)
-
           replicas = enhanced["replicas"]
           cost_diff = enhanced["cost_impact"]["cost_difference_usd_per_hour"]
 
@@ -82,20 +81,22 @@ jobs:
           echo "📦 Files present:"
           ls -la *.py
 
-
       - name: Build Docker image
         run: |
-          echo "Current directory: $(pwd)"
-          echo "Listing control-plane/scaler/:"
-          ls -la control-plane/scaler/
-          
-          # Build from the directory with Dockerfile
-          docker build -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} -f control-plane/scaler/Dockerfile control-plane/scaler/
+          docker build \
+            -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} \
+            -f control-plane/scaler/Dockerfile \
+            control-plane/scaler/
+
           docker tag $REGISTRY/$IMAGE_NAME:${{ github.sha }} $REGISTRY/$IMAGE_NAME:latest
           echo "✅ Docker image built"
+
       - name: Push Docker image
         run: |
-          docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login \
+            -u "${{ secrets.DOCKERHUB_USERNAME }}" \
+            --password-stdin
+
           docker push $REGISTRY/$IMAGE_NAME:${{ github.sha }}
           docker push $REGISTRY/$IMAGE_NAME:latest
           echo "✅ Docker image pushed"
@@ -115,16 +116,15 @@ jobs:
         run: |
           echo "🚀 Deploying NimbusOps Controller..."
 
-          export IMAGE="$REGISTRY/$IMAGE_NAME:${{ github.sha }}"
+          IMAGE="$REGISTRY/$IMAGE_NAME:${{ github.sha }}"
 
-          sed "s|IMAGE_PLACEHOLDER|$IMAGE|g" k8s/base/controller/deployment.yaml \
+          sed "s|IMAGE_PLACEHOLDER|$IMAGE|g" \
+            k8s/workloads/nimbusops-controller/deployment.yaml \
             | kubectl apply -f -
 
       - name: Deploy RBAC
-        run: kubectl apply -f k8s/base/rbac/nimbusops-rbac.yaml
-
-      - name: Deploy Metrics Service
-        run: kubectl apply -f k8s/base/controller/service.yaml
+        run: |
+          kubectl apply -f k8s/base/rbac/nimbusops-rbac.yaml
 
       - name: Wait for rollout
         run: |
