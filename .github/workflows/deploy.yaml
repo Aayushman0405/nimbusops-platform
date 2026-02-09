@@ -85,11 +85,14 @@ jobs:
 
       - name: Build Docker image
         run: |
-          cd control-plane
-          docker build -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} -f scaler/Dockerfile .
+          echo "Current directory: $(pwd)"
+          echo "Listing control-plane/scaler/:"
+          ls -la control-plane/scaler/
+          
+          # Build from the directory with Dockerfile
+          docker build -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} -f control-plane/scaler/Dockerfile control-plane/scaler/
           docker tag $REGISTRY/$IMAGE_NAME:${{ github.sha }} $REGISTRY/$IMAGE_NAME:latest
           echo "✅ Docker image built"
-
       - name: Push Docker image
         run: |
           docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
