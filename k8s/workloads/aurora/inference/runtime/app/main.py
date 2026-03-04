@@ -1,11 +1,9 @@
 import os
 import time
-import json
 import logging
-import requests
-import joblib
+import mlflow
+import mlflow.sklearn
 from pathlib import Path
-
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from prometheus_client import Counter, Histogram, Gauge, generate_latest
@@ -16,16 +14,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("aurora-inference")
 
 # ---------------- Env ----------------
-API_KEY = os.getenv("API_KEY")
-MODEL_FETCH_BASE = os.getenv(
-    "MODEL_FETCH_URL",
-    "http://aurora.aurora-system.svc.cluster.local/models"
-)
+API_KEY = os.getenv("API_KEY", "aurora-internal-key")
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow-server.aurora-system.svc.cluster.local:5000")
 MODEL_NAME = os.getenv("MODEL_NAME", "california-housing")
-MODEL_REF = os.getenv("MODEL_REF", "canary")
-CACHE_DIR = Path(os.getenv("MODEL_CACHE_DIR", "/var/models"))
+MODEL_ALIAS = os.getenv("MODEL_ALIAS", "stable")
+CACHE_DIR = Path("/tmp/model-cache")
 
-HEADERS = {"x-api-key": API_KEY}
+# Configure MLflow for RGW
+os.environ['MLFLOW_S3_ENDPOINT_URL'] = os.getenv('MLFLOW_S3_ENDPOINT_URL', 'http://rook-ceph-rgw-mlflow-store.rook-ceph.svc.cluster.local:80')
+os.environ['AWS_S3_FORCE_PATH_STYLE'] = 'true'
+os.environ['MLFLOW_S3_IGNORE_TLS'] = 'true'
+os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+
+# Set AWS credentials from secrets
+aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+if aws_access_key and aws_secret_key:
+    os.environ['AWS_ACCESS_KEY_ID'] = aws_access_key
+    os.environ['AWS_SECRET_ACCESS_KEY'] = aws_secret_key
+    logger.info("AWS credentials configured from environment")
+else:
+    logger.warning("AWS credentials not found in environment")
+
+mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
 # ---------------- App ----------------
 app = FastAPI(title="Aurora Inference Runtime")
@@ -45,10 +56,11 @@ REQUEST_LATENCY = Histogram(
 
 MODEL_LOADED = Gauge(
     "aurora_inference_model_loaded",
-    "Model loaded status"
+    "Model loaded status (1=loaded, 0=not loaded)"
 )
 
 model = None
+model_version = None
 model_metadata = {}
 
 # ---------------- Schemas ----------------
@@ -56,82 +68,124 @@ class PredictionRequest(BaseModel):
     inputs: list[list[float]]
 
 # ---------------- Security ----------------
-def verify_api_key(key: str = None):
-    if API_KEY and key != API_KEY:
+def verify_api_key(api_key: str = None):
+    if API_KEY and api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
+    return api_key
 
-# ---------------- Model Fetch ----------------
-def fetch_model():
-    global model, model_metadata
+# ---------------- Model Loading ----------------
+def load_model():
+    global model, model_version, model_metadata
 
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    model_dir = CACHE_DIR / MODEL_NAME / MODEL_REF
-    model_dir.mkdir(parents=True, exist_ok=True)
-
-    meta_url = f"{MODEL_FETCH_BASE}/{MODEL_NAME}/{MODEL_REF}"
-    art_url = f"{meta_url}/artifact"
-
-    logger.info(f"Fetching metadata from {meta_url}")
-    meta_resp = requests.get(meta_url, headers=HEADERS)
-    meta_resp.raise_for_status()
-    model_metadata = meta_resp.json()
-
-    with open(model_dir / "metadata.json", "w") as f:
-        json.dump(model_metadata, f, indent=2)
-
-    logger.info(f"Downloading model artifact from {art_url}")
-    art_resp = requests.get(art_url, headers=HEADERS, stream=True)
-    art_resp.raise_for_status()
-
-    model_path = model_dir / "model.pkl"
-    with open(model_path, "wb") as f:
-        for chunk in art_resp.iter_content(chunk_size=8192):
-            f.write(chunk)
-
-    logger.info(f"Loading model from {model_path}")
-    model = joblib.load(model_path)
-    MODEL_LOADED.set(1)
-
-# ---------------- Startup ----------------
-@app.on_event("startup")
-def startup():
     try:
-        fetch_model()
-        logger.info("✅ Model loaded successfully")
+        logger.info(f"Loading model {MODEL_NAME} with alias '{MODEL_ALIAS}' from MLflow")
+        logger.info(f"MLflow Tracking URI: {MLFLOW_TRACKING_URI}")
+
+        # Create cache directory
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Get model version from alias
+        client = mlflow.tracking.MlflowClient()
+        
+        # First, check if the model exists
+        try:
+            model_version_info = client.get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
+            model_version = model_version_info.version
+            run_id = model_version_info.run_id
+            logger.info(f"Found model version: {model_version}, Run ID: {run_id}")
+        except Exception as e:
+            logger.error(f"Could not find model {MODEL_NAME} with alias {MODEL_ALIAS}: {e}")
+            # Try to get latest version as fallback
+            try:
+                latest_versions = client.get_latest_versions(MODEL_NAME, stages=["None"])
+                if latest_versions:
+                    model_version = latest_versions[0].version
+                    run_id = latest_versions[0].run_id
+                    logger.info(f"Using latest version as fallback: {model_version}")
+                else:
+                    raise Exception("No versions found")
+            except Exception as e2:
+                logger.error(f"Could not find any versions: {e2}")
+                MODEL_LOADED.set(0)
+                return
+
+        # Load model from MLflow
+        model_uri = f"models:/{MODEL_NAME}/{model_version}"
+        logger.info(f"Loading model from {model_uri}")
+        model = mlflow.sklearn.load_model(model_uri)
+
+        # Get metadata
+        run = client.get_run(run_id)
+        model_metadata = {
+            "model_name": MODEL_NAME,
+            "version": model_version,
+            "alias": MODEL_ALIAS,
+            "run_id": run_id,
+            "metrics": run.data.metrics,
+            "params": run.data.params,
+            "timestamp": time.time()
+        }
+
+        MODEL_LOADED.set(1)
+        logger.info(f"✅ Model loaded successfully: {MODEL_NAME} v{model_version} ({MODEL_ALIAS})")
+
     except Exception as e:
         logger.error(f"❌ Failed to load model: {e}")
         MODEL_LOADED.set(0)
+        # Don't raise, just log - allow pod to start but show degraded status
+
+# ---------------- Startup ----------------
+@app.on_event("startup")
+def startup_event():
+    # Give MLflow time to initialize
+    time.sleep(5)
+    load_model()
 
 # ---------------- Routes ----------------
 @app.get("/health")
 def health():
     return {
-        "status": "ok" if model else "degraded",
+        "status": "healthy" if model else "degraded",
+        "model_name": MODEL_NAME,
+        "model_version": model_version,
+        "model_alias": MODEL_ALIAS,
         "model_loaded": model is not None,
-        "model_name": model_metadata.get("model_name"),
-        "model_version": model_metadata.get("version"),
+        "mlflow_uri": MLFLOW_TRACKING_URI,
+        "s3_endpoint": os.environ.get('MLFLOW_S3_ENDPOINT_URL', 'not set')
     }
 
 @app.post("/predict")
-def predict(req: PredictionRequest, api_key: str = Depends(verify_api_key)):
+def predict(request: PredictionRequest, api_key: str = Depends(verify_api_key)):
     if model is None:
-        raise HTTPException(503, "Model not loaded")
+        raise HTTPException(status_code=503, detail="Model not loaded")
 
-    start = time.time()
-    preds = model.predict(req.inputs).tolist()
+    start_time = time.time()
 
-    REQUEST_COUNT.labels(
-        status="success",
-        model_version=model_metadata.get("version", "unknown")
-    ).inc()
+    try:
+        # Run inference
+        predictions = model.predict(request.inputs).tolist()
 
-    REQUEST_LATENCY.labels(
-        model_version=model_metadata.get("version", "unknown")
-    ).observe(time.time() - start)
+        # Record latency
+        latency = time.time() - start_time
+        REQUEST_LATENCY.labels(model_version=model_version or "unknown").observe(latency)
+        REQUEST_COUNT.labels(status="success", model_version=model_version or "unknown").inc()
 
-    return {"predictions": preds}
+        return {"predictions": predictions}
+
+    except Exception as e:
+        REQUEST_COUNT.labels(status="error", model_version=model_version or "unknown").inc()
+        logger.error(f"Prediction error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/metrics")
 def metrics():
     return Response(generate_latest(), media_type="text/plain")
 
+@app.post("/reload")
+def reload_model(api_key: str = Depends(verify_api_key)):
+    """Reload model (useful after new training)"""
+    try:
+        load_model()
+        return {"status": "success", "message": f"Model reloaded: {MODEL_NAME} v{model_version} ({MODEL_ALIAS})"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

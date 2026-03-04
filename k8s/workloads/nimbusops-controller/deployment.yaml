@@ -23,7 +23,7 @@ spec:
       serviceAccountName: aurora-sa
       containers:
         - name: controller
-          image: docker.io/aayud/nimbusops-controller:v0.5-enhanced
+          image: aayud/nimbusops-controller:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8001
@@ -31,6 +31,14 @@ spec:
           env:
             - name: PROMETHEUS_URL
               value: http://prometheus.monitoring.svc.cluster.local:9090
+            - name: TARGET_NAMESPACE
+              value: "aurora-system"
+            - name: TARGET_DEPLOYMENT
+              value: "aurora-inference"
+            - name: INITIAL_REPLICAS
+              value: "3"
+            - name: METRICS_PORT
+              value: "8001"
           resources:
             requests:
               memory: "128Mi"
@@ -57,6 +65,8 @@ kind: Service
 metadata:
   name: nimbusops-controller-metrics
   namespace: aurora-system
+  labels:
+    app: nimbusops-controller
 spec:
   selector:
     app: nimbusops-controller

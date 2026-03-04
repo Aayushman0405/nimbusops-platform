@@ -4,11 +4,8 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - 'k8s/**'
-      - 'control-plane/**'
+      - 'control-plane/scaler/**'
       - '.github/workflows/deploy.yaml'
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:  # Manual trigger
     inputs:
       environment:
@@ -19,10 +16,6 @@ on:
         options:
           - staging
           - production
-      component:
-        description: 'Component to deploy'
-        required: false
-        type: string
 
 env:
   REGISTRY: docker.io
@@ -30,58 +23,68 @@ env:
   KUBE_NAMESPACE: aurora-system
 
 jobs:
-  build-and-test:
-    runs-on: self-hosted  # Using your GitHub runner
+  build-and-push:
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-          
+
       - name: Test controller code
         run: |
           cd control-plane/scaler
           echo "Testing controller code..."
           python -c "import sys; sys.path.append('.'); from decision import decide_replicas; print('✅ Decision module imports successfully')"
           python -c "import sys; sys.path.append('.'); from main import NimbusOpsController; print('✅ Main module imports successfully')"
-          
-      - name: Build Docker image
-        run: |
-          cd control-plane/scaler
-          docker build -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} .
-          echo "✅ Docker image built"
-          
-      - name: Push to Docker Hub
-        run: |
-          cd control-plane/scaler
-          docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
-          docker push $REGISTRY/$IMAGE_NAME:${{ github.sha }}
-          docker tag $REGISTRY/$IMAGE_NAME:${{ github.sha }} $REGISTRY/$IMAGE_NAME:latest
-          docker push $REGISTRY/$IMAGE_NAME:latest
-          echo "✅ Docker image pushed"
+          python -c "import sys; sys.path.append('.'); from prometheus_query import check_prometheus_health; print('✅ Prometheus query module imports successfully')"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./control-plane/scaler
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
-    needs: build-and-test
-    runs-on: self-hosted  # Using your GitHub runner
+    needs: build-and-push
+    runs-on: self-hosted
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up kubectl
         run: |
-          # kubectl should already be installed on self-hosted runner
           kubectl version --client
-          
+
+      - name: Apply RBAC
+        run: |
+          echo "🔐 Applying RBAC..."
+          kubectl apply -f k8s/base/rbac/nimbusops-rbac.yaml
+
       - name: Deploy NimbusOps Controller
         run: |
           echo "🚀 Deploying NimbusOps Controller..."
-          
+
           # Update image in deployment
           export NEW_IMAGE="$REGISTRY/$IMAGE_NAME:${{ github.sha }}"
-          
+
           # Create temp deployment file with updated image
           cat > /tmp/nimbusops-deployment.yaml << DEPLOYMENT
           apiVersion: apps/v1
@@ -91,7 +94,7 @@ jobs:
             namespace: $KUBE_NAMESPACE
             labels:
               app: nimbusops-controller
-              version: github-${{ github.sha }}
+              version: ${{ github.sha }}
           spec:
             replicas: 1
             selector:
@@ -117,27 +120,39 @@ jobs:
                     env:
                       - name: PROMETHEUS_URL
                         value: http://prometheus.monitoring.svc.cluster.local:9090
-          DEPLOYMENT
-          
-          # Apply deployment
-          kubectl apply -f /tmp/nimbusops-deployment.yaml
-          
-      - name: Deploy RBAC
-        run: |
-          echo "🔐 Deploying RBAC..."
-          kubectl apply -f k8s/base/rbac/nimbusops-rbac.yaml
-          
-      - name: Deploy Metrics Service
-        run: |
-          echo "📊 Deploying Metrics Service..."
-          
-          # Create service for metrics
-          cat > /tmp/nimbusops-service.yaml << SERVICE
+                      - name: TARGET_NAMESPACE
+                        value: "aurora-system"
+                      - name: TARGET_DEPLOYMENT
+                        value: "aurora-inference"
+                      - name: INITIAL_REPLICAS
+                        value: "3"
+                    resources:
+                      requests:
+                        memory: "128Mi"
+                        cpu: "100m"
+                      limits:
+                        memory: "256Mi"
+                        cpu: "200m"
+                    livenessProbe:
+                      httpGet:
+                        path: /metrics
+                        port: 8001
+                      initialDelaySeconds: 30
+                      periodSeconds: 10
+                    readinessProbe:
+                      httpGet:
+                        path: /metrics
+                        port: 8001
+                      initialDelaySeconds: 5
+                      periodSeconds: 5
+          ---
           apiVersion: v1
           kind: Service
           metadata:
             name: nimbusops-controller-metrics
             namespace: $KUBE_NAMESPACE
+            labels:
+              app: nimbusops-controller
           spec:
             selector:
               app: nimbusops-controller
@@ -145,49 +160,48 @@ jobs:
               - port: 8001
                 targetPort: 8001
                 name: metrics
-          SERVICE
-          
-          kubectl apply -f /tmp/nimbusops-service.yaml
-          
-      - name: Deploy Grafana Dashboard
-        run: |
-          echo "📈 Deploying Grafana Dashboard..."
-          kubectl apply -f k8s/observability/nimbusops-dashboard/grafana-dashboard-nimbusops.yaml
-          
+          DEPLOYMENT
+
+          # Apply deployment
+          kubectl apply -f /tmp/nimbusops-deployment.yaml
+
       - name: Wait for rollout
         run: |
           echo "⏳ Waiting for deployment to be ready..."
           kubectl rollout status deployment/nimbusops-controller -n $KUBE_NAMESPACE --timeout=300s
-          
+
       - name: Verify deployment
         run: |
           echo "✅ Verification..."
           kubectl get pods -n $KUBE_NAMESPACE -l app=nimbusops-controller
           kubectl get svc -n $KUBE_NAMESPACE -l app=nimbusops-controller
-          
+
       - name: Get deployment logs
         run: |
           echo "📋 Getting logs..."
-          kubectl logs -n $KUBE_NAMESPACE deployment/nimbusops-controller --tail=20
+          kubectl logs -n $KUBE_NAMESPACE deployment/nimbusops-controller --tail=50
+
+      - name: Apply Grafana Dashboard
+        run: |
+          echo "📈 Applying Grafana Dashboard..."
+          kubectl apply -f k8s/observability/nimbusops-dashboard/grafana-dashboard-nimbusops.yaml || true
 
   notify:
     needs: deploy
     runs-on: self-hosted
     if: always()
-    
+
     steps:
-      - name: Send success notification
-        if: success()
+      - name: Send notification
         run: |
-          echo "✅ NimbusOps deployment successful!"
-          echo "Commit: ${{ github.sha }}"
-          echo "Deployed by: ${{ github.actor }}"
-          echo "Dashboard available at: http://grafana.monitoring.svc.cluster.local:3000"
-          
-      - name: Send failure notification
-        if: failure()
-        run: |
-          echo "❌ NimbusOps deployment failed!"
-          echo "Commit: ${{ github.sha }}"
-          echo "Failed step: ${{ job.status }}"
-          exit 1
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ NimbusOps deployment successful!"
+            echo "Commit: ${{ github.sha }}"
+            echo "Deployed by: ${{ github.actor }}"
+            echo "Monitor at: http://grafana.monitoring.svc.cluster.local:3000"
+          else
+            echo "❌ NimbusOps deployment failed!"
+            echo "Commit: ${{ github.sha }}"
+            echo "Failed step: ${{ job.status }}"
+            exit 1
+          fi

@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aurora-trainer-1771573591
+  namespace: aurora-system
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      serviceAccountName: aurora-sa
+      containers:
+      - name: trainer
+        image: aayud/aurora-trainer:latest
+        imagePullPolicy: Always
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aurora-s3-creds
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aurora-s3-creds
+              key: AWS_SECRET_ACCESS_KEY
+        - name: MLFLOW_TRACKING_URI
+          value: http://mlflow-server.aurora-system.svc.cluster.local:5000
+        - name: MODEL_NAME
+          value: california-housing
+        - name: MLFLOW_S3_ENDPOINT_URL
+          value: http://rook-ceph-rgw-mlflow-store.rook-ceph.svc.cluster.local:80
+        - name: AWS_S3_FORCE_PATH_STYLE
+          value: "true"
+        - name: MLFLOW_S3_IGNORE_TLS
+          value: "true"
+        - name: AWS_DEFAULT_REGION
+          value: us-east-1
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+      restartPolicy: Never

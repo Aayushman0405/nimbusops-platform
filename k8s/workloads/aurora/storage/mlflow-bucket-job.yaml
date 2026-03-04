@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-mlflow-bucket
+  namespace: aurora-system
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      containers:
+      - name: aws-cli
+        image: amazon/aws-cli:2.15.0
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aurora-s3-creds
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aurora-s3-creds
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_ENDPOINT_URL
+          value: http://rook-ceph-rgw-mlflow-store.rook-ceph.svc.cluster.local:80
+        - name: AWS_DEFAULT_REGION
+          value: us-east-1
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Testing connection to RGW..."
+          aws s3 ls --endpoint-url $AWS_ENDPOINT_URL || exit 1
+          
+          echo "Creating MLflow artifacts bucket..."
+          aws s3 mb s3://mlflow-artifacts --endpoint-url $AWS_ENDPOINT_URL || echo "Bucket may already exist"
+          
+          echo "Creating models bucket..."
+          aws s3 mb s3://aurora-models --endpoint-url $AWS_ENDPOINT_URL || echo "Bucket may already exist"
+          
+          echo "Listing buckets:"
+          aws s3 ls --endpoint-url $AWS_ENDPOINT_URL
+      restartPolicy: Never

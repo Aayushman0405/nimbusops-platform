@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+pythonenv*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Kubernetes
+*.secret.yaml
+*secret*.yaml
+kubeconfig
+*.kubeconfig
+
+# Docker
+*.log
+Dockerfile.local
+docker-compose.override.yml
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+terraform.tfvars
+
+# Secrets and credentials
+**/secrets/
+**/credentials/
+**/keys/
+*.pem
+*.key
+*.crt
+*.p12
+
+# Local development
+*.local
+*.bak
+*.tmp
+*.temp
+.env
+.env.local
+.env.*.local
+
+# Helm
+charts/*.tgz

@@ -1,6 +1,7 @@
 import requests
 import os
 from typing import List, Dict, Any
+import time
 
 PROM_URL = os.getenv(
     "PROMETHEUS_URL",
@@ -16,38 +17,67 @@ def query(promql: str) -> List[Dict[str, Any]]:
             timeout=10
         )
         resp.raise_for_status()
-        
+
         result = resp.json()["data"]["result"]
         return result
+    except requests.exceptions.ConnectionError:
+        print(f"[Prometheus] Connection error - is Prometheus running at {PROM_URL}?")
+        return []
     except Exception as e:
         print(f"[Prometheus] Query failed: {e}")
         return []
 
 def get_avg_cpu(namespace: str, deployment: str) -> float:
     """Get average CPU usage for deployment"""
-    promql = f'''
-    avg(
-      rate(container_cpu_usage_seconds_total{{
-        namespace="{namespace}",
-        pod=~"{deployment}.*",
-        container!="POD"
-      }}[2m])
-    ) by (pod)
-    '''
+    # Try different container name patterns
+    promql_variations = [
+        f'''
+        avg(
+          rate(container_cpu_usage_seconds_total{{
+            namespace="{namespace}",
+            pod=~"{deployment}.*",
+            container!="POD",
+            container!=""
+          }}[2m])
+        )
+        ''',
+        f'''
+        avg(
+          rate(container_cpu_usage_seconds_total{{
+            namespace="{namespace}",
+            pod=~"{deployment}.*"
+          }}[2m])
+        ) by (pod)
+        ''',
+        # Fallback to node-exporter metrics
+        f'''
+        sum(
+          rate(node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate{{
+            namespace="{namespace}",
+            pod=~"{deployment}.*"
+          }}[2m])
+        )
+        '''
+    ]
     
-    results = query(promql)
-    if not results:
-        return 0.0
+    for promql in promql_variations:
+        results = query(promql)
+        if results:
+            try:
+                # Handle different result formats
+                if isinstance(results, list):
+                    if len(results) == 0:
+                        continue
+                    if "value" in results[0]:
+                        return float(results[0]["value"][1])
+                    elif "values" in results[0]:
+                        return float(results[0]["values"][-1][1])
+                elif isinstance(results, dict):
+                    return float(results.get("value", [0, 0])[1])
+            except (ValueError, KeyError, IndexError, TypeError):
+                continue
     
-    # Calculate average across all pods
-    cpu_values = []
-    for result in results:
-        try:
-            cpu_values.append(float(result["value"][1]))
-        except (ValueError, KeyError, IndexError):
-            continue
-    
-    return sum(cpu_values) / len(cpu_values) if cpu_values else 0.0
+    return 0.0
 
 def get_memory_usage(namespace: str, deployment: str) -> float:
     """Get average memory usage in percentage"""
@@ -57,83 +87,93 @@ def get_memory_usage(namespace: str, deployment: str) -> float:
         namespace="{namespace}",
         pod=~"{deployment}.*",
         container!="POD"
-      }} / 
-      container_spec_memory_limit_bytes{{
+      }} /
+      kube_pod_container_resource_limits{{
         namespace="{namespace}",
         pod=~"{deployment}.*",
-        container!="POD"
+        resource="memory"
       }}
-    ) by (pod)
+    )
     '''
-    
+
     results = query(promql)
     if not results:
         return 0.0
-    
-    memory_values = []
-    for result in results:
-        try:
-            value = float(result["value"][1])
-            if value <= 1.0:  # Ensure it's a ratio
-                memory_values.append(value * 100)  # Convert to percentage
-        except (ValueError, KeyError, IndexError):
-            continue
-    
-    return sum(memory_values) / len(memory_values) if memory_values else 0.0
+
+    try:
+        if results and "value" in results[0]:
+            value = float(results[0]["value"][1])
+            return value * 100  # Convert to percentage
+    except (ValueError, KeyError, IndexError):
+        pass
+
+    return 0.0
 
 def get_request_rate(namespace: str, deployment: str) -> float:
     """Get HTTP request rate per second"""
-    promql = f'''
-    sum(
-      rate(http_requests_total{{
-        namespace="{namespace}",
-        pod=~"{deployment}.*"
-      }}[2m])
-    )
-    '''
-    
-    results = query(promql)
-    if not results:
-        # Try alternative metric name
-        promql = f'''
+    # Try to get request rate from inference service
+    promql_variations = [
+        f'''
         sum(
-          rate(requests_total{{
+          rate(nginx_ingress_controller_requests{{
+            namespace="{namespace}",
+            ingress=~".*inference.*"
+          }}[2m])
+        )
+        ''',
+        f'''
+        sum(
+          rate(container_network_receive_bytes_total{{
             namespace="{namespace}",
             pod=~"{deployment}.*"
           }}[2m])
+        ) / 1024  # Convert to KB/s
+        ''',
+        f'''
+        sum(
+          rate(istio_requests_total{{
+            destination_service_namespace="{namespace}",
+            destination_service_name=~".*inference.*"
+          }}[2m])
         )
         '''
+    ]
+
+    for promql in promql_variations:
         results = query(promql)
-    
-    if not results:
-        return 0.0
-    
-    try:
-        return float(results[0]["value"][1])
-    except (ValueError, KeyError, IndexError):
-        return 0.0
+        if results:
+            try:
+                if results and "value" in results[0]:
+                    return float(results[0]["value"][1])
+            except (ValueError, KeyError, IndexError):
+                continue
+
+    return 0.0
 
 def get_latency_p95(namespace: str, deployment: str) -> float:
     """Get 95th percentile latency in seconds"""
     promql = f'''
     histogram_quantile(0.95,
       sum(
-        rate(http_request_duration_seconds_bucket{{
-          namespace="{namespace}",
-          pod=~"{deployment}.*"
+        rate(istio_request_duration_milliseconds_bucket{{
+          destination_service_namespace="{namespace}",
+          destination_service_name=~".*inference.*"
         }}[2m])
       ) by (le)
-    )
+    ) / 1000  # Convert to seconds
     '''
-    
+
     results = query(promql)
     if not results:
         return 0.0
-    
+
     try:
-        return float(results[0]["value"][1])
+        if results and "value" in results[0]:
+            return float(results[0]["value"][1])
     except (ValueError, KeyError, IndexError):
-        return 0.0
+        pass
+
+    return 0.0
 
 def get_all_metrics(namespace: str, deployment: str) -> Dict[str, float]:
     """Get all relevant metrics at once"""
@@ -143,3 +183,11 @@ def get_all_metrics(namespace: str, deployment: str) -> Dict[str, float]:
         "request_rate": get_request_rate(namespace, deployment),
         "latency_p95": get_latency_p95(namespace, deployment)
     }
+
+def check_prometheus_health() -> bool:
+    """Check if Prometheus is reachable"""
+    try:
+        resp = requests.get(f"{PROM_URL}/-/healthy", timeout=5)
+        return resp.status_code == 200
+    except:
+        return False

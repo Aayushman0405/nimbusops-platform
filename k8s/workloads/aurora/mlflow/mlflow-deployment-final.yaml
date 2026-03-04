@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-server
+  namespace: aurora-system
+  labels:
+    app: mlflow-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-server
+  template:
+    metadata:
+      labels:
+        app: mlflow-server
+    spec:
+      serviceAccountName: aurora-sa
+      containers:
+      - name: mlflow
+        image: ghcr.io/mlflow/mlflow:v2.11.3
+        ports:
+        - containerPort: 5000
+        env:
+        - name: MLFLOW_S3_ENDPOINT_URL
+          value: http://rook-ceph-rgw-mlflow-store.rook-ceph.svc.cluster.local:80
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aurora-s3-creds
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aurora-s3-creds
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_S3_FORCE_PATH_STYLE
+          value: "true"
+        - name: MLFLOW_S3_IGNORE_TLS
+          value: "true"
+        - name: AWS_DEFAULT_REGION
+          value: "us-east-1"
+        args:
+        - mlflow
+        - server
+        - --host=0.0.0.0
+        - --port=5000
+        - --backend-store-uri=sqlite:////mlflow/mlflow.db
+        - --default-artifact-root=s3://mlflow-artifacts
+        - --serve-artifacts
+        volumeMounts:
+        - name: mlflow-data
+          mountPath: /mlflow
+        resources:
+          requests:
+            memory: "768Mi"
+            cpu: "250m"
+          limits:
+            memory: "1.5Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          failureThreshold: 6
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          failureThreshold: 6
+      volumes:
+      - name: mlflow-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-server
+  namespace: aurora-system
+spec:
+  selector:
+    app: mlflow-server
+  ports:
+  - port: 5000
+    targetPort: 5000
